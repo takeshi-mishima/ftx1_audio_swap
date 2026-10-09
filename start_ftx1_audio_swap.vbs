@@ -9,10 +9,11 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 currentDir = fso.GetParentFolderName(WScript.ScriptFullName)
 
 ' --- Setting ---
-' MODE : follow = side selected on the panel (VS)
-'        main   = always MAIN
-'        sub    = always SUB
-MODE = "follow"
+' MODE : fixed  = MAIN on LEFT (WSJT-X #1) and SUB on RIGHT (WSJT-X #2), always
+'        follow = side selected on the panel (VS) on LEFT
+'        main   = MAIN on LEFT
+'        sub    = SUB on LEFT
+MODE = "fixed"
 
 ' Extra options, e.g. "--port 4534 --interval 2" (leave empty for defaults)
 EXTRA_OPTS = ""

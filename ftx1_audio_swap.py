@@ -1,5 +1,5 @@
 #
-# ftx1_audio_swap.py : FTX-1 USB Audio L/R swapper for WSJT-X (Ver.1.0)
+# ftx1_audio_swap.py : FTX-1 USB Audio L/R swapper for WSJT-X (Ver.2.0)
 #
 # The FTX-1 USB audio device routes MAIN/SUB receive audio to the
 # LEFT/RIGHT channels according to the band combination, not to the
@@ -16,9 +16,12 @@
 # left empty (pass-through).
 #
 # Wanted side (--mode):
-#   follow : the side selected on the panel (VS)   [default]
-#   main   : always MAIN
-#   sub    : always SUB
+#   fixed  : MAIN on LEFT and SUB on RIGHT, always   [default]
+#            (WSJT-X #1 = MAIN on Mono/LEFT, WSJT-X #2 = SUB on RIGHT;
+#             pairs with ftx1_rigwrap --listen 4535:main --listen 4536:sub)
+#   follow : the side selected on the panel (VS) on LEFT
+#   main   : MAIN on LEFT
+#   sub    : SUB on LEFT
 #
 # Needs only the Python standard library,
 # a running rigctld for the FTX-1, and Equalizer APO with
@@ -36,6 +39,7 @@ import time
 from logging.handlers import RotatingFileHandler
 
 # --- Setting (defaults, each can be overridden on the command line) ---
+VERSION = '2.0'
 RIGCTLD_HOST = '127.0.0.1'
 RIGCTLD_PORT = 4534
 POLL_INTERVAL_SEC = 2.0
@@ -170,9 +174,22 @@ def audio_channels(vs, main_vuhf, sub_vuhf):
 
 
 def decide(mode, vs, main_hz, sub_hz, vuhf_hz):
-    """Return (swap: bool, target side, note)."""
-    target = vs if mode == 'follow' else mode.upper()
+    """Return (swap: bool, target, note)."""
     left, right = audio_channels(vs, main_hz >= vuhf_hz, sub_hz >= vuhf_hz)
+    if mode == 'fixed':
+        # Want LEFT = MAIN, RIGHT = SUB. Swap when LEFT carries SUB or
+        # RIGHT carries MAIN. A silent channel (both HF/50) is left alone;
+        # only the selected side is on USB then, so it is put on its own
+        # channel (MAIN -> LEFT, SUB -> RIGHT).
+        swap = (left == 'SUB') or (right == 'MAIN')
+        if right is None:
+            note = 'MAIN on LEFT only (both HF/50)' if not swap \
+                else 'SUB on RIGHT only (both HF/50)'
+        else:
+            note = 'MAIN on LEFT, SUB on RIGHT' if not swap \
+                else 'SUB on LEFT, MAIN on RIGHT'
+        return swap, 'MAIN=L SUB=R', note
+    target = vs if mode == 'follow' else mode.upper()
     if target == left:
         return False, target, 'target on LEFT'
     if target == right:
@@ -210,9 +227,9 @@ def run(args):
         swap_path = os.path.join(config_dir, SWAP_FILE_NAME)
     vuhf_hz = int(args.vuhf_mhz * 1e6)
 
-    log.info('start: mode=%s rigctld=%s:%d interval=%.1fs vuhf>=%.1fMHz '
+    log.info('ftx1_audio_swap %s start: mode=%s rigctld=%s:%d interval=%.1fs vuhf>=%.1fMHz '
              'swap_file=%s (%s)%s',
-             args.mode, args.host, args.port, args.interval, args.vuhf_mhz,
+             VERSION, args.mode, args.host, args.port, args.interval, args.vuhf_mhz,
              swap_path, source, ' [DRY RUN]' if args.dry_run else '')
 
     rig = Rigctld(args.host, args.port)
@@ -269,8 +286,9 @@ def run(args):
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description='FTX-1 USB Audio L/R swapper (Equalizer APO)')
-    p.add_argument('--mode', choices=('follow', 'main', 'sub'), default='follow',
-                   help='side whose audio WSJT-X should hear on LEFT/Mono (default: follow)')
+    p.add_argument('--mode', choices=('fixed', 'follow', 'main', 'sub'), default='fixed',
+                   help='fixed: MAIN on LEFT and SUB on RIGHT; follow/main/sub: the side '
+                        'whose audio WSJT-X should hear on LEFT/Mono (default: fixed)')
     p.add_argument('--host', default=RIGCTLD_HOST)
     p.add_argument('--port', type=int, default=RIGCTLD_PORT)
     p.add_argument('--interval', type=float, default=POLL_INTERVAL_SEC,
