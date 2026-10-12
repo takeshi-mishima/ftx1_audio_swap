@@ -1,4 +1,4 @@
-# ftx1_audio_swap Ver.2.0
+# ftx1_audio_swap Ver.2.1
 
 八重洲無線 FTX-1は、デュアルバンド受信時のMAINバンド/SUBバンドの音声をUSBオーディオのLEFTチャネル/RIGHTチャネルに出力しますが、どちらのチャネルに出力するかはバンド設定の組み合わせで決まり、パネルの操作バンドの選択には従いません（下表）。このツールはrigctld経由でリグの状態を読み、WSJT-X（入力：USB Audio Device）に受信したい側の音声が届くように、必要に応じて自動的にLEFT/RIGHTを入れ替えます。2つのWSJT-Xを使うデュアルバンド運用では、WSJT-X #1（入力：Mono＝LEFT）にMAIN、WSJT-X #2（入力：Right）にSUBの音声が常に届くようにします（fixedモード、既定）。このツールはチャネルの入れ替えの判断を行い、実際のチャネルの入れ替えにはオープンソースソフトウェアのEqualizer APOを使います。
 
@@ -23,7 +23,7 @@ VUHF = 144/430MHz帯（判定の境目は100MHz。`--vuhf-mhz`で変更可）。
 
 fixedは、WSJT-Xを2つ起動して、#1をMAIN、#2をSUBの担当に固定する運用向けです（ftx1_rigwrapを `--listen 4535:main --listen 4536:sub` で起動し、#1は4535、#2は4536に接続します）。MAIN/SUBを入れ替えても各WSJT-Xの担当バンドは変わらないので、モードやトランスバータの周波数オフセットなど、WSJT-Xごとの設定をそのまま使えます。
 
-このツールは、入れ替えが必要なときだけEqualizer APOのconfigフォルダのswap.txtに`Copy: L=R R=L`を自動的に書き込むことによりLEFT/RIGHTを入れ替え、それ以外のときはswap.txtを空にしてパススルーにします。入れ替える条件は、follow/main/subでは「受信したい側の音声がRIGHTにある」とき、fixedでは「LEFTがSUB、またはRIGHTがMAIN」のときです。
+このツールは、入れ替えが必要なときだけEqualizer APOのconfigフォルダのswap.txtに`Copy: L=R R=L`を自動的に書き込むことによりLEFT/RIGHTを入れ替え、それ以外のときはswap.txtを空にしてパススルーにします。入れ替える条件は、fixedでは「LEFTがSUB、またはRIGHTがMAIN」のとき、follow/main/subでは「受信したい側の音声がRIGHTにある」ときです。
 
 fixedで、MAIN/SUBとも HF/50 のときは、FTX-1のRIGHTが無音になるので、操作バンド側の音声だけがUSBに出ます。操作バンドがMAINなら#1だけ、SUBなら#2だけが受信できます（SUBの音声がRIGHTへ移るよう入れ替えます）。
 
@@ -79,7 +79,7 @@ python ftx1_audio_swap.py --dry-run --once
 正常なら次の例のように表示されます:
 
 ```
-2026-10-09 00:02:28,771 INFO ftx1_audio_swap 2.0 start: mode=fixed rigctld=127.0.0.1:4534 interval=2.0s vuhf>=100.0MHz swap_file=C:\Program Files\EqualizerAPO\config\swap.txt (registry) [DRY RUN]
+2026-10-09 00:02:28,771 INFO ftx1_audio_swap 2.1 start: mode=fixed rigctld=127.0.0.1:4534 interval=2.0s vuhf>=100.0MHz swap_file=C:\Program Files\EqualizerAPO\config\swap.txt (registry) [DRY RUN]
 2026-10-09 00:02:28,830 INFO connected to rigctld
 2026-10-09 00:02:29,015 INFO VS=MAIN MAIN=50.260000MHz SUB=144.460000MHz target=MAIN=L SUB=R -> PASS (MAIN on LEFT, SUB on RIGHT)
 ```
@@ -122,7 +122,24 @@ python ftx1_audio_swap.py --dry-run --once
 
 ### 停止方法
 
-タスクマネージャーで該当の`pythonw.exe`を終了します（ほかにも`pythonw.exe`が動いているときは、「詳細」タブの列見出しを右クリックして「コマンドライン」列を表示し、`ftx1_audio_swap.py`のものを見分けてください）。停止後もswap.txtは最後の状態のまま残ります。入れ替えが残って困るときは、swap.txtの中身を削除して空にしてください。
+タスクマネージャーで該当の`pythonw.exe`を終了します（ほかにも`pythonw.exe`が動いているときは、「詳細」タブの列見出しを右クリックして「コマンドライン」列を表示し、`ftx1_audio_swap.py`のものを見分けてください）。停止後もswap.txtは最後の状態のまま残ります。入れ替えやLEFT置き換え（後述）が残って困るときは、swap.txtの中身を削除して空にしてください。
+
+## 送信音声の漏れ対策（送信中のLEFT置き換え）
+
+FTX-1は、送信側がUSBオーディオ出力の素のRIGHTにあるとき、送信音声がLEFTにも混入します（スピーカーには出ず、USBにだけ出ます）。2つのWSJT-Xを使うと、LEFT側のWSJT-Xが自局の送信を受信したようにデコードしてしまいます。
+
+その対策として、このツールは、次の条件がそろっている間だけ、素のLEFTをミュートします。
+
+- 送信中である（CATの`TX;`がTX0以外）
+- 送信側（＝パネルで選択中の操作バンド）が、素のRIGHTにある（上表のRIGHT。両方HF/50ではRIGHTが無音なので対象外）
+
+実際には、swap.txtの先頭に`Copy: L=R`の行を追加します。このときのRIGHTは、送信側自身の受信音声の経路で、無線機が受信をミュートしているため、受信ノイズだけが流れていて送信音声は含まれません。置き換えたあとのLEFTは完全な無音ではなく、この受信ノイズになります。置き換えられる素のLEFTには、無線機側ですでにミュートされた受信信号しかないため、失う音声はありません。送信が終わると、すぐに元へ戻します。
+
+- LEFTを`Copy: L=0.0`で完全な無音にしても漏れは止まりますが、WSJT-Xに無音（または直流）を入力するとワイドグラフに縞状のノイズが表示されます（実機で確認。無音の入力に対するWSJT-Xの表示で、実際のノイズではありません）。`Copy: L=R`ならこの縞は出ません。
+- 送信状態は0.25秒間隔で読みます。周波数などの判定は従来どおり`--interval`の間隔で行い、送信が始まった瞬間にも更新します。
+- rigctldとの接続が切れたとき、終了するときにも元へ戻します（`pythonw.exe`を強制終了した場合は戻らないので、swap.txtを空にしてください）。
+- ログに`LEFT=RIGHT ON`／`LEFT=RIGHT OFF`が記録されます。
+- 送信音声の漏れ対策を使わないときは`--no-tx-mute`を付けて起動します。
 
 ## オプション
 
@@ -133,6 +150,7 @@ python ftx1_audio_swap.py --dry-run --once
 | `--interval`        | 2.0              | ポーリング間隔（秒）                                                                                                        |
 | `--vuhf-mhz`        | 100              | この周波数以上をVUHFとみなす                                                                                                |
 | `--swap-file`       | 自動             | swap.txtのパス。未指定時はレジストリ`HKLM\SOFTWARE\EqualizerAPO\ConfigPath`、なければ`C:\Program Files\EqualizerAPO\config` |
+| `--no-tx-mute`      | -                | 送信音声の漏れ対策を使わない                                                                                                |
 | `--dry-run`         | -                | 判定をログに出すだけでswap.txtを書かない                                                                                    |
 | `--once`            | -                | 1回だけ判定して終了                                                                                                         |
 
@@ -140,8 +158,8 @@ python ftx1_audio_swap.py --dry-run --once
 
 - rigctldへは専用のTCP接続を1本張り、`\set_vfo_opt 1`（この接続だけVFO明示）にしてから、`v`・`f Main`・`f Sub`を問い合わせます。WSJT-Xなどには影響しません。
 - swap.txtは判定が変わったときだけ自動的に書き換えます。
-- rigctldに接続できない間は、swap.txtを変えずに再接続を試み続けます。
-- ログ: `ftx1_audio_swap.py`と同じフォルダの`logs\ftx1_audio_swap.log`（1MB×4世代でローテーション）。起動時、rigctldへの接続時、判定が変わったとき、swap.txtを書き換えたとき、エラーの発生時に記録します。
+- rigctldに接続できない間は、入れ替えの状態は変えずに（LEFT置き換えだけ元へ戻して）再接続を試み続けます。
+- ログ: `ftx1_audio_swap.py`と同じフォルダの`logs\ftx1_audio_swap.log`（1MB×4世代でローテーション）。起動時、rigctldへの接続時、判定が変わったとき、swap.txtを書き換えたとき、LEFT置き換えの開始と解除、エラーの発生時に記録します。
 
 ## ライセンス
 
@@ -154,6 +172,7 @@ python ftx1_audio_swap.py --dry-run --once
 
 ## 変更履歴
 
+- Ver.2.1 送信側がUSB出力の素のRIGHTにあるときだけ、送信中は素のLEFTをミュートする機能を追加した（送信音声がLEFTに混入する件の対策。`--no-tx-mute`で無効にできる）
 - Ver.2.0 fixedモードを追加して既定にした（LEFT＝MAIN、RIGHT＝SUBに固定。WSJT-X #1をMAIN、#2をSUBの担当に固定する運用向け）。follow / main / sub は Ver.1.0 と同じ動作で使える
 - Ver.1.0 初版
 
