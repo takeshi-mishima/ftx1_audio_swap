@@ -61,7 +61,7 @@ DEFAULT_CONFIG_DIR = r'C:\Program Files\EqualizerAPO\config'
 SWAP_FILE_NAME = 'swap.txt'
 SWAP_LINE = 'Copy: L=R R=L\n'
 MUTE_LINE = 'Copy: L=R\n'        # replaces the raw LEFT by RIGHT (swap not needed then)
-TX_INTERVAL_SEC = 0.25           # TX; polling interval for the TX-leak mute
+TX_INTERVAL_SEC = 0.5            # TX; polling interval for the TX-leak mute (only while the mute can apply)
 SOCKET_TIMEOUT_SEC = 6.0
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -285,9 +285,10 @@ def run(args):
     snap = None                # (vs, main_hz, sub_hz) of the last full poll
     last_full = 0.0
     tx_check = not args.no_tx_mute
-    # TX; is polled fast, the rest (VS, frequencies) every --interval
+    # TX; is polled fast (TX_INTERVAL_SEC), but only while the mute can apply
+    # (the last snapshot says the selected side is on the raw RIGHT) or while
+    # transmitting. The rest (VS, frequencies) is read every --interval
     # and at the moment a transmission starts.
-    idle_wait = min(args.interval, TX_INTERVAL_SEC) if tx_check else args.interval
 
     def apply(swap_on, mute_on):
         """Write swap.txt when its content has to change."""
@@ -319,7 +320,8 @@ def run(args):
                     log.info('connected to rigctld')
                     last_error = None
 
-                tx_now = rig.get_tx() if tx_check else False
+                need_tx = tx_check and (tx or (snap is not None and tx_mute_wanted(*snap, vuhf_hz)))
+                tx_now = rig.get_tx() if need_tx else False
                 now = time.monotonic()
                 if snap is None or now - last_full >= args.interval or (tx_now and not tx):
                     vs = rig.get_vfo()
@@ -346,7 +348,8 @@ def run(args):
                         log.info('LEFT=RIGHT OFF (%s)', 'TX ended' if not tx else 'not wanted')
                     mute = mute_now
                 apply(swap, mute)
-                wait = idle_wait
+                poll_tx = tx_check and (tx or tx_mute_wanted(*snap, vuhf_hz))
+                wait = min(args.interval, TX_INTERVAL_SEC) if poll_tx else args.interval
 
             except (OSError, RigctldError) as e:
                 msg = f'rigctld: {e}'
