@@ -117,6 +117,7 @@ python ftx1_audio_swap.py --dry-run --once
 - `WARNING rigctld: ... (keeping current swap state, retrying)` と出て終わる：rigctldに接続できていません。rigctldが起動しているか、`--host` / `--port` が合っているか確認してください（`--once` なので再接続はせずに終了します）。
 - 常駐起動後、ログに `ERROR cannot write ...swap.txt ... (check folder write permission)` が出る：configフォルダへの書き込み権限がありません（dry-runではswap.txtを書かないので、このエラーは出ません）。
 - ログでは判定どおりにswap.txtを書き換えているのに、入れ替えが効かない：Windowsの大型アップデートの後に、Equalizer APOのデバイス設定が外れることがあると言われています。Equalizer APOのフォルダのDeviceSelector.exeで、USB Audio Deviceのマイク（Capture devices）をもう一度選び直し、Windowsを再起動してください。
+- 月例のWindows Update（累積更新）の後にも、Equalizer APOのデバイス設定が外れた例があります（2026年11月、KB5132061の適用後と思われる）。更新の後は、DeviceSelector.exeでCapture devicesのチェックを確認してください。簡易確認は、audio_swapを止めて、swap.txtを一時的に`Copy: L=0.0`にし、LEFTを聞くWSJT-Xのデコードが止まるかを見ます（止まらなければEqualizer APOが効いていません）。確認後はswap.txtを空にして、audio_swapを起動し直してください。
 
 ### 常駐起動方法
 
