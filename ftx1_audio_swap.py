@@ -1,5 +1,5 @@
 #
-# ftx1_audio_swap.py : FTX-1 USB Audio L/R swapper for WSJT-X (Ver.2.2)
+# ftx1_audio_swap.py : FTX-1 USB Audio L/R swapper for WSJT-X (Ver.2.3)
 #
 # The FTX-1 USB audio device routes MAIN/SUB receive audio to the
 # LEFT/RIGHT channels according to the band combination, not to the
@@ -51,6 +51,17 @@
 #   main   : MAIN on LEFT
 #   sub    : SUB on LEFT
 #
+# APO check (Ver.2.3): when Equalizer APO is no longer installed on the USB Audio
+# capture device (this happened after a Windows Update), the swap and the mute
+# silently stop working and WSJT-X hears the raw channels. At start and every
+# APO_CHECK_INTERVAL_SEC the registry is read (no admin rights needed); when the
+# state changes it is logged and, if APO is missing, a message box is shown once.
+# The same check also reads config.txt next to swap.txt: when the line "Include: swap.txt"
+# is switched off in the Equalizer APO Configuration Editor (it becomes
+# "# Include: swap.txt"), the swap and the mute do not work either, and the same
+# warning is given. The swap/mute itself is not affected by the results.
+# (--no-apo-check, --apo-device)
+#
 # Needs only the Python standard library,
 # a running rigctld for the FTX-1, and Equalizer APO with
 # config.txt containing the single line "Include: swap.txt".
@@ -63,11 +74,12 @@ import logging
 import os
 import socket
 import sys
+import threading
 import time
 from logging.handlers import RotatingFileHandler
 
 # --- Setting (defaults, each can be overridden on the command line) ---
-VERSION = '2.2'
+VERSION = '2.3'
 RIGCTLD_HOST = '127.0.0.1'
 RIGCTLD_PORT = 4534
 POLL_INTERVAL_SEC = 2.0
@@ -115,6 +127,146 @@ def find_config_dir():
     except (ImportError, OSError):
         pass
     return DEFAULT_CONFIG_DIR, 'default'
+
+
+# --- Is Equalizer APO installed on the capture device WSJT-X listens to? (Ver.2.3) ---
+APO_CHECK_INTERVAL_SEC = 300.0
+APO_DEVICE_NAME = 'USB Audio'    # part of the capture device's adapter name
+APO_CLSID = '{EACD2258-FCAC-4FF4-B36D-419E924A6D79}'   # Equalizer APO (EqualizerAPO.dll)
+MMDEVICES_CAPTURE = r'SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture'
+ADAPTER_NAME_PROP = '{b3f8fa53-0004-438e-9003-51a46e139bfc},6'
+FX_PROP_PREFIX = '{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},'
+FX_PROP_NUMBERS = ('5', '6', '7')   # stream / mode / endpoint effect (APO CLSID)
+
+
+def is_apo_clsid(winreg, clsid, flags):
+    """The CLSID is Equalizer APO's: the known CLSID, or a DLL named EqualizerAPO."""
+    if clsid.upper() == APO_CLSID:
+        return True
+    try:
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, 'CLSID\\' + clsid + '\\InprocServer32',
+                            0, flags) as key:
+            return 'equalizerapo' in str(winreg.QueryValueEx(key, '')[0]).lower()
+    except OSError:
+        return False
+
+
+def has_apo(winreg, base, dev, flags):
+    """Is an APO registered in the FxProperties of the capture endpoint dev?"""
+    try:
+        with winreg.OpenKey(base, dev + '\\FxProperties', 0, flags) as key:
+            for n in FX_PROP_NUMBERS:
+                try:
+                    clsid = str(winreg.QueryValueEx(key, FX_PROP_PREFIX + n)[0])
+                except FileNotFoundError:
+                    continue
+                if is_apo_clsid(winreg, clsid, flags):
+                    return True
+    except FileNotFoundError:
+        pass
+    return False
+
+
+def check_apo(name_part):
+    """Is Equalizer APO installed on every active capture device whose adapter
+    name contains name_part? Returns (state, detail): 'ok'; 'missing' (an active
+    device without APO); 'nodevice' (no such active device: the radio is off or
+    unplugged); 'error' (the registry could not be read, not a verdict)."""
+    try:
+        import winreg
+    except ImportError:
+        return 'error', 'winreg is not available (not Windows)'
+    flags = winreg.KEY_READ | winreg.KEY_WOW64_64KEY
+    found, missing = [], []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, MMDEVICES_CAPTURE, 0, flags) as base:
+            index = 0
+            while True:
+                try:
+                    dev = winreg.EnumKey(base, index)
+                except OSError:
+                    break
+                index += 1
+                try:
+                    with winreg.OpenKey(base, dev, 0, flags) as key:
+                        active = winreg.QueryValueEx(key, 'DeviceState')[0] == 1
+                    if not active:
+                        continue
+                    with winreg.OpenKey(base, dev + '\\Properties', 0, flags) as key:
+                        adapter = str(winreg.QueryValueEx(key, ADAPTER_NAME_PROP)[0])
+                except FileNotFoundError:
+                    continue
+                if name_part.lower() not in adapter.lower():
+                    continue
+                name = f'{adapter} {dev}'
+                found.append(name)
+                if not has_apo(winreg, base, dev, flags):
+                    missing.append(name)
+    except OSError as e:
+        return 'error', f'cannot read the registry: {e}'
+    if missing:
+        return 'missing', ', '.join(missing)
+    if found:
+        return 'ok', ', '.join(found)
+    return 'nodevice', f'no active capture device with "{name_part}" in its adapter name'
+
+
+def check_include(swap_path):
+    """Is "Include: <swap file>" active (not commented out) in config.txt next to swap.txt?
+    Returns (state, detail): 'on', 'off' (no active line: switched off in the Editor
+    becomes "# Include: swap.txt", or the line is missing) or 'error' (cannot read)."""
+    config_dir = os.path.dirname(swap_path)
+    config_path = os.path.join(config_dir, 'config.txt')
+    try:
+        with open(config_path, 'rb') as f:
+            raw = f.read()
+    except OSError as e:
+        return 'error', f'cannot read {config_path}: {e}'
+    if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
+        text = raw.decode('utf-16', errors='replace')
+    else:
+        text = raw.decode('utf-8-sig', errors='replace')
+    want = os.path.normcase(os.path.normpath(swap_path))
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.lower().startswith('include:'):      # also skips "# Include: ..." (switched off)
+            continue
+        target = line[len('include:'):].strip().strip('"')
+        if os.path.normcase(os.path.normpath(os.path.join(config_dir, target))) == want:
+            return 'on', config_path
+    return 'off', config_path
+
+
+def show_message_box(title, text):
+    """Warning message box in a separate thread (it must not stop the swap loop)."""
+    def box():
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, text, title, 0x30 | 0x40000)  # warning icon, topmost
+        except Exception:
+            pass
+
+    threading.Thread(target=box, daemon=True).start()
+
+
+WARNING_EFFECT = ('L/R の入れ替えとミュートが効かず、WSJT-X に違うバンドの音が入ります'
+                  '（PSK Reporter に誤った受信レポートが出るおそれがあります）。\n\n')
+
+
+def show_apo_warning(name_part):
+    show_message_box(
+        'ftx1_audio_swap: Equalizer APO が外れています',
+        f'「{name_part}」の録音デバイスに Equalizer APO が適用されていません。\n' + WARNING_EFFECT +
+        'Equalizer APO の DeviceSelector.exe で、Capture devices の該当デバイスに'
+        'チェックを入れてOKを押し、Windows を再起動してください。')
+
+
+def show_include_warning(swap_name):
+    show_message_box(
+        f'ftx1_audio_swap: {swap_name} が無効です',
+        f'Equalizer APO の config.txt で「Include: {swap_name}」がオフになっています。\n' + WARNING_EFFECT +
+        'Equalizer APO の Configuration Editor で、config.txt の「Include: '
+        f'{swap_name}」の電源ボタンをオン（Power on）にして、保存してください。')
 
 
 # --- rigctld client (extended response protocol, explicit VFO) ---
@@ -397,9 +549,60 @@ def run(args):
             return {'L': [], 'R': []}
         return mute_raw_channels(*snap, vuhf_hz, cw, tx_active, tx_check, rx_check)
 
+    apo_state = None           # last result of check_apo
+    next_apo_check = 0.0       # time.monotonic() of the next check (0: right at start)
+
+    include_state = None       # last result of check_include
+
+    def check_swap_include():
+        """Is "Include: swap.txt" switched on in config.txt? Log when the state changes."""
+        nonlocal include_state
+        state, detail = check_include(swap_path)
+        if state == include_state:
+            return
+        previous, include_state = include_state, state
+        name = os.path.basename(swap_path)
+        if state == 'on':
+            log.info('APO check: "Include: %s" is on in %s%s', name, detail,
+                     ' (recovered)' if previous == 'off' else '')
+        elif state == 'off':
+            log.warning('APO check: "Include: %s" is OFF in %s. The swap and the mute are not '
+                        'applied. Turn it on (power button) in the Equalizer APO Configuration Editor.',
+                        name, detail)
+            if not (args.dry_run or args.once):
+                show_include_warning(name)
+        else:
+            log.warning('APO check: %s', detail)
+
+    def check_apo_now():
+        """Check Equalizer APO at start and every APO_CHECK_INTERVAL_SEC; log when the state changes."""
+        nonlocal apo_state, next_apo_check
+        if args.no_apo_check or time.monotonic() < next_apo_check:
+            return
+        next_apo_check = time.monotonic() + APO_CHECK_INTERVAL_SEC
+        check_swap_include()
+        state, detail = check_apo(args.apo_device)
+        if state == apo_state:
+            return
+        previous, apo_state = apo_state, state
+        if state == 'ok':
+            log.info('APO check: Equalizer APO is installed on %s%s', detail,
+                     ' (recovered)' if previous == 'missing' else '')
+        elif state == 'missing':
+            log.warning('APO check: Equalizer APO is NOT installed on %s. The swap and the mute '
+                        'have no effect (WSJT-X hears the raw channels). Run DeviceSelector.exe, '
+                        'tick the device in Capture devices, then restart Windows.', detail)
+            if not (args.dry_run or args.once):
+                show_apo_warning(args.apo_device)
+        elif state == 'nodevice':
+            log.info('APO check: %s', detail)
+        else:
+            log.warning('APO check: %s', detail)
+
     try:
         while True:
             wait = args.interval
+            check_apo_now()
             try:
                 if not connected:
                     rig.connect()
@@ -484,6 +687,11 @@ def parse_args(argv=None):
                    help='disable the TX-leak mute (no silencing of the raw LEFT while transmitting)')
     p.add_argument('--no-rx-mute', action='store_true',
                    help='disable the receive-leak mutes (HF/50 pair, CW side) and the mode reads they need')
+    p.add_argument('--no-apo-check', action='store_true',
+                   help='do not check whether Equalizer APO is installed on the capture device')
+    p.add_argument('--apo-device', default=APO_DEVICE_NAME,
+                   help='part of the adapter name of the capture device WSJT-X listens to '
+                        '(default: USB Audio)')
     p.add_argument('--dry-run', action='store_true',
                    help='log decisions only, do not write swap.txt')
     p.add_argument('--once', action='store_true',

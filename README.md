@@ -1,4 +1,4 @@
-# ftx1_audio_swap Ver.2.2
+# ftx1_audio_swap Ver.2.3
 
 八重洲無線 FTX-1は、デュアルバンド受信時のMAINバンド/SUBバンドの音声をUSBオーディオのLEFTチャネル/RIGHTチャネルに出力しますが、どちらのチャネルに出力するかはバンド設定の組み合わせで決まり、パネルの操作バンドの選択には従いません（下表）。このツールはrigctld経由でリグの状態を読み、WSJT-X（入力：USB Audio Device）に受信したい側の音声が届くように、必要に応じて自動的にLEFT/RIGHTを入れ替えます。2つのWSJT-Xを使うデュアルバンド運用では、WSJT-X #1（入力：Left）にMAIN、WSJT-X #2（入力：Right）にSUBの音声が常に届くようにします（fixedモード、既定）。WSJT-Xの受信チャネルは「Mono」ではなく「Left」「Right」に設定してください（「Mono」は、WSJT-Xが1チャネルで開いてWindowsにステレオからの変換を任せる設定で、LEFTだけを使うとは限りません。LとRが混ざると、RIGHTの漏れがLEFTに入ります）。また、WSJT-Xに本来の受信音ではない音声（送信音声の混入、HF/50同士の漏れ、CWモードの側への混入）が入ってデコードされないように、該当するチャネルを自動的に無音にします（後述の「漏れ対策（ミュート）」）。このツールはチャネルの入れ替えとミュートの判断を行い、実際の処理にはオープンソースソフトウェアのEqualizer APOを使います。
 
@@ -81,12 +81,14 @@ python ftx1_audio_swap.py --dry-run --once
 正常なら次の例のように表示されます:
 
 ```
-2026-10-09 00:02:28,771 INFO ftx1_audio_swap 2.2 start: mode=fixed rigctld=127.0.0.1:4534 interval=2.0s vuhf>=100.0MHz swap_file=C:\Program Files\EqualizerAPO\config\swap.txt (registry) [DRY RUN]
+2026-10-09 00:02:28,771 INFO ftx1_audio_swap 2.3 start: mode=fixed rigctld=127.0.0.1:4534 interval=2.0s vuhf>=100.0MHz swap_file=C:\Program Files\EqualizerAPO\config\swap.txt (registry) [DRY RUN]
 2026-10-09 00:02:28,830 INFO connected to rigctld
 2026-10-09 00:02:29,015 INFO VS=MAIN MAIN=50.260000MHz SUB=144.460000MHz target=MAIN=L SUB=R -> PASS (MAIN on LEFT, SUB on RIGHT)
 ```
 
 このあと、無音にするチャネルがあるときは `mute: raw L [TX]` のような行（`--dry-run`では `[DRY RUN] swap.txt would be: ...` の行も）が表示されます。モードがCWの側があるときは `mode: SUB is CW` が表示されます。
+
+起動直後と、その後5分ごとに、Equalizer APOがUSB Audio Deviceの録音デバイスに適用されているかを確認します。結果が変わったときだけ、`APO check: Equalizer APO is installed on USB Audio Device {...}`（正常）、`APO check: Equalizer APO is NOT installed on ...`（WARNING。外れている）などの行が記録されます。外れているときは、メッセージボックスも1回表示されます（`--dry-run`と`--once`では表示しません）。USB Audio Deviceが見つからないとき（無線機の電源が切れているなど）は、`APO check: no active capture device ...`と記録するだけです。`--no-apo-check`で無効にできます。あわせて、Equalizer APOのconfig.txt（swap.txtと同じフォルダ）で、`Include: swap.txt` がオン（Power on）になっているかも確認します。Configuration Editorで電源ボタンをオフにすると、この行は `# Include: swap.txt` とコメントになるので、行頭に `#` が付いている場合や行がない場合は「オフ」と判定し、`APO check: "Include: swap.txt" is OFF in ...`（WARNING）と記録して、メッセージボックスを1回表示します（オンに戻すと、`... is on ... (recovered)` と記録します）。config.txtを読めないときは、オフとは判定せず、ログに記録するだけです。config.txtが別のファイルを `Include` して、その中でswap.txtを読む構成は、検出できません。入れ替えとミュートの処理は、確認の結果に関係なく動きます。
 
 この例は既定のfixedモードです。`--mode follow` などを指定したときは、`target=` と判定の表示が下の表のようになります（例：`target=MAIN -> SWAP (target on RIGHT)`）。
 
@@ -117,7 +119,7 @@ python ftx1_audio_swap.py --dry-run --once
 - `WARNING rigctld: ... (keeping current swap state, retrying)` と出て終わる：rigctldに接続できていません。rigctldが起動しているか、`--host` / `--port` が合っているか確認してください（`--once` なので再接続はせずに終了します）。
 - 常駐起動後、ログに `ERROR cannot write ...swap.txt ... (check folder write permission)` が出る：configフォルダへの書き込み権限がありません（dry-runではswap.txtを書かないので、このエラーは出ません）。
 - ログでは判定どおりにswap.txtを書き換えているのに、入れ替えが効かない：Windowsの大型アップデートの後に、Equalizer APOのデバイス設定が外れることがあると言われています。Equalizer APOのフォルダのDeviceSelector.exeで、USB Audio Deviceのマイク（Capture devices）をもう一度選び直し、Windowsを再起動してください。
-- 月例のWindows Update（累積更新）の後にも、Equalizer APOのデバイス設定が外れた例があります（2026年11月、KB5132061の適用後と思われる）。更新の後は、DeviceSelector.exeでCapture devicesのチェックを確認してください。簡易確認は、audio_swapを止めて、swap.txtを一時的に`Copy: L=0.0`にし、LEFTを聞くWSJT-Xのデコードが止まるかを見ます（止まらなければEqualizer APOが効いていません）。確認後はswap.txtを空にして、audio_swapを起動し直してください。
+- 月例のWindows Update（累積更新）の後にも、Equalizer APOのデバイス設定が外れた例があります（2026年11月、KB5132061の適用後と思われる）。Ver.2.3以降は、audio_swapが起動直後と5分ごとに確認し、外れていればログとメッセージボックスで知らせます。知らされたら、DeviceSelector.exeでCapture devicesのチェックを入れ直し、Windowsを再起動してください。自動で確認できないときは、更新の後にDeviceSelector.exeでCapture devicesのチェックを確認してください。簡易確認は、audio_swapを止めて、swap.txtを一時的に`Copy: L=0.0`にし、LEFTを聞くWSJT-Xのデコードが止まるかを見ます（止まらなければEqualizer APOが効いていません）。確認後はswap.txtを空にして、audio_swapを起動し直してください。
 
 ### 常駐起動方法
 
@@ -166,6 +168,8 @@ FTX-1のUSBオーディオ出力には、本来の受信音ではない音声が
 | `--swap-file`       | 自動             | swap.txtのパス。未指定時はレジストリ`HKLM\SOFTWARE\EqualizerAPO\ConfigPath`、なければ`C:\Program Files\EqualizerAPO\config` |
 | `--no-tx-mute`      | -                | 送信音声の漏れ対策（TXのミュート）を使わない                                                                                |
 | `--no-rx-mute`      | -                | HF/50同士の漏れとCWの側のミュートを使わない（CWの判定のためのモード読み出しも止める）                                       |
+| `--no-apo-check`    | -                | Equalizer APOがUSB Audio Deviceに適用されているか、config.txtで`Include: swap.txt`がオンかの確認（5分ごと）を使わない                                                |
+| `--apo-device`      | USB Audio        | 確認する録音デバイスのアダプター名の一部（WSJT-Xの入力デバイス）                                                            |
 | `--dry-run`         | -                | 判定をログに出すだけでswap.txtを書かない                                                                                    |
 | `--once`            | -                | 1回だけ判定して終了                                                                                                         |
 
@@ -188,6 +192,7 @@ FTX-1のUSBオーディオ出力には、本来の受信音ではない音声が
 
 ## 変更履歴
 
+- Ver.2.3 Equalizer APOがUSB Audio Deviceの録音デバイスに適用されているかを、起動直後と5分ごとにレジストリで確認し、外れていればログ（WARNING）とメッセージボックスで知らせる機能を追加した（Windows Updateの後にAPOのデバイス設定が外れ、入れ替えとミュートが効かなくなった事例への対策。`--no-apo-check`で無効にでき、`--apo-device`で対象の名前を変えられる）。あわせて、Equalizer APOのconfig.txtで`Include: swap.txt`がオフ（`# Include: swap.txt`）になっていないかも確認し、オフならログとメッセージボックスで知らせる。入れ替えとミュートの処理は変更していない。
 - Ver.2.2 ミュートの方式を、素のLEFTを素のRIGHTで置き換える`Copy: L=R`から、`Copy: <ch>=0.0`（無音）に戻した。MAIN/SUBとも HF/50 のときの素のRIGHT（操作バンド側の音声の漏れ）と、片側だけがCWモードのときのCWの側のチャネルも、同じ方法でミュートする（両方CWのときはミュートしない。モードはCATで片側ずつ交互に読む。`--no-rx-mute`で無効にできる）。送信状態（`TX;`）の読み出しは、ミュートが要る組み合わせのときと送信中だけ・0.5秒間隔にした（PTT遅延の軽減）。WSJT-Xの受信チャネルは「Mono」ではなく「Left」「Right」に設定する旨と、構成図を「Left」に変更した。ミュート中のワイドグラフの縞ノイズは、FlattenとRef Specをオフにして回避する旨を追記した。
 - Ver.2.1 送信側がUSB出力の素のRIGHTにあるときだけ、送信中は素のLEFTをミュートする機能を追加した（送信音声がLEFTに混入する件の対策。`--no-tx-mute`で無効にできる）
 - Ver.2.0 fixedモードを追加して既定にした（LEFT＝MAIN、RIGHT＝SUBに固定。WSJT-X #1をMAIN、#2をSUBの担当に固定する運用向け）。follow / main / sub は Ver.1.0 と同じ動作で使える
